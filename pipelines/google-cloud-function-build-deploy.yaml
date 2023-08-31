@@ -1,0 +1,398 @@
+pipeline:
+  name: Google Cloud Functions - Canary
+  identifier: Google_Cloud_Functions_Canary
+  projectIdentifier: Platform_Demo
+  orgIdentifier: default
+  tags: {}
+  stages:
+    - stage:
+        name: Build Function
+        identifier: Build_Function
+        type: CI
+        spec:
+          cloneCodebase: true
+          execution:
+            steps:
+              - parallel:
+                  - step:
+                      type: Run
+                      name: Build
+                      identifier: Build
+                      spec:
+                        connectorRef: account.Docker_Connector_for_Hosted
+                        image: javieraviles/zip
+                        shell: Sh
+                        command: |-
+                          zip function.zip main.py requirements.txt
+                          mkdir artifacts
+                          mv function.zip artifacts/
+                  - step:
+                      type: Bandit
+                      name: Bandit Scan
+                      identifier: Bandit_Scan
+                      spec:
+                        mode: orchestration
+                        config: default
+                        target:
+                          name: myGCF
+                          type: repository
+                          variant: <+codebase.branch>
+                        advanced:
+                          log:
+                            level: info
+                          fail_on_severity: critical
+              - step:
+                  type: GCSUpload
+                  name: Upload to GCS
+                  identifier: Upload_to_GCS
+                  spec:
+                    connectorRef: account.SalesGCP
+                    bucket: lr-functions
+                    sourcePath: artifacts
+          platform:
+            os: Linux
+            arch: Amd64
+          runtime:
+            type: Cloud
+            spec: {}
+    - stage:
+        name: Deploy Dev
+        identifier: Deploy_Dev
+        description: ""
+        type: Deployment
+        spec:
+          deploymentType: GoogleCloudFunctions
+          service:
+            serviceRef: GoogleCloudFunction
+            serviceInputs:
+              serviceDefinition:
+                type: GoogleCloudFunctions
+                spec:
+                  artifacts:
+                    primary:
+                      primaryArtifactRef: GCFBucket
+                      sources:
+                        - identifier: GCFBucket
+                          type: GoogleCloudStorage
+                          spec:
+                            artifactPath: function.zip
+          environment:
+            environmentRef: dev
+            deployToAll: false
+            infrastructureDefinitions:
+              - identifier: GoogleCloudFunctionsDEV
+          execution:
+            steps:
+              - step:
+                  type: JiraCreate
+                  name: Create JIRA
+                  identifier: Create_JIRA
+                  spec:
+                    connectorRef: account.Harness_JIRA
+                    projectKey: HD
+                    issueType: Story
+                    fields:
+                      - name: Summary
+                        value: GCF Deployment <+service.name>
+                  timeout: 10m
+              - step:
+                  type: Policy
+                  name: Governance Checks
+                  identifier: Governance_Checks
+                  spec:
+                    policySets:
+                      - account.Google_Cloud_Function
+                    type: Custom
+                    policySpec:
+                      payload: <+fileStore.getAsString("/GoogleCloudFunctions/gcf.yaml")>
+                  timeout: 10m
+              - step:
+                  name: Deploy Cloud Function
+                  identifier: deployCloudFunction
+                  type: DeployCloudFunction
+                  timeout: 10m
+                  spec:
+                    updateFieldMask: ""
+              - step:
+                  type: Http
+                  name: Health Check
+                  identifier: Health_Check
+                  spec:
+                    url: <+pipeline.stages.Deploy_Dev.spec.execution.steps.deployCloudFunction.output.url>
+                    method: GET
+                    headers: []
+                    outputVariables: []
+                  timeout: 10s
+              - step:
+                  type: JiraUpdate
+                  name: Update JIRA
+                  identifier: Update_JIRA
+                  spec:
+                    connectorRef: account.Harness_JIRA
+                    issueKey: <+pipeline.stages.Deploy_Dev.spec.execution.steps.Create_JIRA.issue.key>
+                    transitionTo:
+                      transitionName: ""
+                      status: In Progress
+                    fields:
+                      - name: Comment
+                        value: "Google Cloud Function <+service.name> deployed in <+env.name>\\\\URL: <+pipeline.stages.Deploy_Dev.spec.execution.steps.deployCloudFunction.output.url> \\\\  Governance Check status: <+pipeline.stages.Deploy_Dev.spec.execution.steps.Governance_Checks.output.status>\\\\Source: <+pipeline.stages.Deploy_Dev.spec.execution.steps.deployCloudFunction.output.source>"
+                  timeout: 10m
+            rollbackSteps:
+              - step:
+                  name: Rollback Cloud Function
+                  identifier: cloudFunctionRollback
+                  type: CloudFunctionRollback
+                  timeout: 10m
+                  spec: {}
+        tags: {}
+        failureStrategies:
+          - onFailure:
+              errors:
+                - AllErrors
+              action:
+                type: StageRollback
+    - stage:
+        name: Deploy QA
+        identifier: Deploy_QA
+        description: ""
+        type: Deployment
+        spec:
+          deploymentType: GoogleCloudFunctions
+          service:
+            useFromStage:
+              stage: Deploy_Dev
+          environment:
+            environmentRef: qa
+            deployToAll: false
+            infrastructureDefinitions:
+              - identifier: GoogleCloudFunctionsQA
+          execution:
+            steps:
+              - step:
+                  type: JiraUpdate
+                  name: Update JIRA to QA
+                  identifier: Update_JIRA_to_QA
+                  spec:
+                    connectorRef: account.Harness_JIRA
+                    issueKey: <+pipeline.stages.Deploy_Dev.spec.execution.steps.Create_JIRA.issue.key>
+                    transitionTo:
+                      transitionName: ""
+                      status: QA Test
+                    fields:
+                      - name: Comment
+                        value: Starting deployment in <+env.name>
+                  timeout: 10m
+              - step:
+                  name: Deploy Cloud Function
+                  identifier: deployCloudFunction
+                  type: DeployCloudFunction
+                  timeout: 10m
+                  spec: {}
+              - step:
+                  type: Http
+                  name: Health Check
+                  identifier: Health_Check
+                  spec:
+                    url: <+pipeline.stages.Deploy_QA.spec.execution.steps.deployCloudFunction.output.url>
+                    method: GET
+                    headers: []
+                    outputVariables: []
+                  timeout: 10s
+              - step:
+                  type: JiraUpdate
+                  name: Update JIRA
+                  identifier: Update_JIRA
+                  spec:
+                    connectorRef: account.Harness_JIRA
+                    issueKey: <+pipeline.stages.Deploy_Dev.spec.execution.steps.Create_JIRA.issue.key>
+                    fields:
+                      - name: Comment
+                        value: Function deployed to <+env.name>. Health check passed.
+                  timeout: 10m
+            rollbackSteps:
+              - step:
+                  name: Rollback Cloud Function
+                  identifier: cloudFunctionRollback
+                  type: CloudFunctionRollback
+                  timeout: 10m
+                  spec: {}
+        tags: {}
+        failureStrategies:
+          - onFailure:
+              errors:
+                - AllErrors
+              action:
+                type: StageRollback
+    - stage:
+        name: Approval
+        identifier: Approval
+        description: ""
+        type: Approval
+        spec:
+          execution:
+            steps:
+              - step:
+                  name: Jira Approval
+                  identifier: Jira_Approval
+                  type: JiraApproval
+                  timeout: 1d
+                  spec:
+                    approvalCriteria:
+                      type: KeyValues
+                      spec:
+                        matchAnyCondition: true
+                        conditions:
+                          - key: Status
+                            operator: equals
+                            value: Approved
+                    rejectionCriteria:
+                      type: KeyValues
+                      spec:
+                        matchAnyCondition: true
+                        conditions: []
+                    connectorRef: account.Harness_JIRA
+                    issueKey: <+pipeline.stages.Deploy_Dev.spec.execution.steps.Create_JIRA.issue.key>
+                  when:
+                    stageStatus: Success
+                    condition: <+pipeline.variables.approval_needed>=="Yes"
+                  failureStrategies: []
+        tags: {}
+    - stage:
+        name: Deploy Prd
+        identifier: Deploy_Prd
+        description: ""
+        type: Deployment
+        spec:
+          deploymentType: GoogleCloudFunctions
+          service:
+            useFromStage:
+              stage: Deploy_Dev
+          environment:
+            environmentRef: prod
+            deployToAll: false
+            infrastructureDefinitions:
+              - identifier: GoogleCloudFunctionsPROD
+          execution:
+            steps:
+              - step:
+                  type: Policy
+                  name: Governance Checks
+                  identifier: Governance_Checks
+                  spec:
+                    policySets:
+                      - account.Google_Cloud_Function
+                    type: Custom
+                    policySpec:
+                      payload: <+fileStore.getAsString("/GoogleCloudFunctions/gcf.yaml")>
+                  timeout: 10m
+              - stepGroup:
+                  name: Canary Deployment
+                  identifier: canaryDepoyment
+                  steps:
+                    - step:
+                        name: Deploy Cloud Function With No Traffic
+                        identifier: deployCloudFunctionWithNoTraffic
+                        type: DeployCloudFunctionWithNoTraffic
+                        timeout: 10m
+                        spec: {}
+                    - step:
+                        name: Traffic Shift 10percent
+                        identifier: cloudFunctionTrafficShiftFirst
+                        type: CloudFunctionTrafficShift
+                        timeout: 10m
+                        spec:
+                          trafficPercent: 10
+                    - parallel:
+                        - step:
+                            type: Verify
+                            name: Verify Canary
+                            identifier: Verify
+                            timeout: 2h
+                            spec:
+                              isMultiServicesOrEnvs: false
+                              type: Canary
+                              monitoredService:
+                                type: Default
+                                spec: {}
+                              spec:
+                                sensitivity: MEDIUM
+                                duration: 10m
+                                deploymentTag: <+serviceConfig.artifacts.primary.tag>
+                            failureStrategies:
+                              - onFailure:
+                                  errors:
+                                    - Verification
+                                  action:
+                                    type: ManualIntervention
+                                    spec:
+                                      timeout: 2h
+                                      onTimeout:
+                                        action:
+                                          type: StageRollback
+                              - onFailure:
+                                  errors:
+                                    - Unknown
+                                  action:
+                                    type: ManualIntervention
+                                    spec:
+                                      timeout: 2h
+                                      onTimeout:
+                                        action:
+                                          type: Ignore
+                        - step:
+                            type: Http
+                            name: Health Check
+                            identifier: Health_Check
+                            spec:
+                              url: <+pipeline.stages.Deploy_Prd.spec.execution.steps.canaryDepoyment.steps.deployCloudFunctionWithNoTraffic.output.url>
+                              method: GET
+                              headers: []
+                              outputVariables: []
+                            timeout: 2m
+                    - step:
+                        name: Traffic Shift 100percent
+                        identifier: Traffic_Shift_100percent
+                        type: CloudFunctionTrafficShift
+                        timeout: 10m
+                        spec:
+                          trafficPercent: 100
+              - step:
+                  type: JiraUpdate
+                  name: Close JIRA
+                  identifier: Close_JIRA
+                  spec:
+                    connectorRef: account.Harness_JIRA
+                    issueKey: <+pipeline.stages.Deploy_Dev.spec.execution.steps.Create_JIRA.issue.key>
+                    transitionTo:
+                      transitionName: ""
+                      status: Done
+                    fields:
+                      - name: Comment
+                        value: "Function deployed in <+env.name> successfully. \\\\ Verification with ML: Passed"
+                  timeout: 10m
+            rollbackSteps:
+              - step:
+                  name: Rollback Cloud Function
+                  identifier: cloudFunctionRollback
+                  type: CloudFunctionRollback
+                  timeout: 10m
+                  spec: {}
+        tags: {}
+        failureStrategies:
+          - onFailure:
+              errors:
+                - AllErrors
+              action:
+                type: StageRollback
+  properties:
+    ci:
+      codebase:
+        connectorRef: account.Public_Github
+        repoName: luisredda/harness-gcf-canary
+        build: <+input>
+  variables:
+    - name: approval_needed
+      type: String
+      default: "No"
+      description: ""
+      value: <+input>.allowedValues(Yes,No)
