@@ -1,0 +1,28 @@
+service:
+  name: GoogleCloudFunction
+  identifier: GoogleCloudFunction
+  serviceDefinition:
+    type: GoogleCloudFunctions
+    spec:
+      artifacts:
+        primary:
+          primaryArtifactRef: <+input>
+          sources:
+            - spec:
+                connectorRef: account.SalesGCP
+                project: sales-209522
+                bucket: lr-functions
+                artifactPath: <+input>
+              identifier: GCFBucket
+              type: GoogleCloudStorage
+      manifests:
+        - manifest:
+            identifier: Manifest
+            type: GoogleCloudFunctionDefinition
+            spec:
+              store:
+                type: Harness
+                spec:
+                  files:
+                    - /GoogleCloudFunctions/gcf.yaml
+  gitOpsEnabled: false
