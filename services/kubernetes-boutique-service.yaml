@@ -1,0 +1,34 @@
+service:
+  name: Boutique - Frontend
+  identifier: Boutique_Frontend
+  tags: {}
+  serviceDefinition:
+    spec:
+      manifests:
+        - manifest:
+            identifier: Frontend
+            type: K8sManifest
+            spec:
+              store:
+                type: Github
+                spec:
+                  connectorRef: WingsSoftware_Repo
+                  gitFetchType: Branch
+                  paths:
+                    - boutique/06-frontend.yaml
+                  repoName: e2e-enterprise-demo
+                  branch: main
+              skipResourceVersioning: false
+              valuesPaths:
+                - boutique/values.yaml
+      artifacts:
+        primary:
+          primaryArtifactRef: <+input>
+          sources:
+            - spec:
+                connectorRef: danf_dockerhub
+                imagePath: dmontanez/boutique-frontend
+                tag: 1.0.8
+              identifier: boutiquefrontend
+              type: DockerRegistry
+    type: Kubernetes
