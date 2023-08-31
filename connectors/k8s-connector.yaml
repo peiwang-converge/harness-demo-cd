@@ -1,0 +1,13 @@
+connector:
+  name: platform-demo-k8s
+  identifier: platformdemok8s
+  description: ""
+  accountIdentifier: 6_vVHzo9Qeu9fXvj-AcbCQ
+  orgIdentifier: default
+  projectIdentifier: Platform_Demo
+  type: K8sCluster
+  spec:
+    credential:
+      type: InheritFromDelegate
+    delegateSelectors:
+      - platform
